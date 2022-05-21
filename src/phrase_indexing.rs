@@ -56,7 +56,7 @@ struct IndexedPhrase {
     word_pos_in_phrase: usize,
 }
 
-#[derive(PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
 struct IndexedPhraseContent<'s> {
     phrase_content: &'s str,
     word_pos_in_phrase: usize,
@@ -157,6 +157,22 @@ impl IndexedPhrases {
             word_pos_in_phrase,
         });
     }
+}
+
+fn concatenate_indexed_phrases<'s>(
+    mut first_phrase: IndexedPhraseContent<'s>,
+    mut second_phrase: IndexedPhraseContent<'s>,
+) -> String {
+    if first_phrase.word_pos_in_phrase == 0
+        && !second_phrase.phrase_content[second_phrase.word_pos_in_phrase..].contains(' ')
+    {
+        std::mem::swap(&mut first_phrase, &mut second_phrase);
+    }
+
+    let first_phrase_half = &first_phrase.phrase_content[..first_phrase.word_pos_in_phrase];
+    let second_phrase_half = &second_phrase.phrase_content[second_phrase.word_pos_in_phrase..];
+
+    format!("{}{}", first_phrase_half, second_phrase_half)
 }
 
 #[cfg(test)]
@@ -323,7 +339,52 @@ mod retrieval_of_phrases_for_word_in_common_tests {
             HashSet::from_iter([IndexedPhraseContent {
                 phrase_content: "hello there friend",
                 word_pos_in_phrase: 12,
-            },])
+            }])
         );
+    }
+}
+
+#[cfg(test)]
+mod phrase_concatenation_tests {
+    use super::{concatenate_indexed_phrases, IndexedPhraseContent};
+
+    #[test]
+    fn should_split_phrases_and_concatenate_at_the_word_in_common() {
+        let phrase_a = IndexedPhraseContent {
+            phrase_content: "i have to go to the supermarket",
+            word_pos_in_phrase: 10,
+        };
+
+        let phrase_b = IndexedPhraseContent {
+            phrase_content: "does anyone need to go first",
+            word_pos_in_phrase: 20,
+        };
+
+        assert_eq!(
+            concatenate_indexed_phrases(phrase_a, phrase_b),
+            "i have to go first"
+        );
+
+        assert_eq!(
+            concatenate_indexed_phrases(phrase_b, phrase_a),
+            "does anyone need to go to the supermarket"
+        );
+    }
+
+    #[test]
+    fn should_swap_phrases_if_the_first_starts_with_word_and_the_second_ends_with_word() {
+        let phrase_a = IndexedPhraseContent {
+            phrase_content: "go to the supermarket",
+            word_pos_in_phrase: 0,
+        };
+
+        let phrase_b = IndexedPhraseContent {
+            phrase_content: "does anyone need to go",
+            word_pos_in_phrase: 20,
+        };
+
+        let phrase_result = concatenate_indexed_phrases(phrase_a, phrase_b);
+
+        assert_eq!(phrase_result, "does anyone need to go to the supermarket");
     }
 }
