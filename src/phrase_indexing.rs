@@ -47,7 +47,19 @@ impl From<Phrase> for String {
 struct IndexedPhrases {
     interned_texts: HashMap<String, usize>,
     indexed_texts: Vec<String>,
-    phrase_indices_by_word: HashMap<usize, HashSet<usize>>,
+    indexed_phrases_by_word: HashMap<usize, HashSet<IndexedPhrase>>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct IndexedPhrase {
+    interned_phrase_index: usize,
+    word_pos_in_phrase: usize,
+}
+
+#[derive(PartialEq, Eq, Hash, Debug)]
+struct IndexedPhraseContent<'s> {
+    phrase_content: &'s str,
+    word_pos_in_phrase: usize,
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -58,16 +70,17 @@ impl IndexedPhrases {
         IndexedPhrases {
             interned_texts: HashMap::new(),
             indexed_texts: Vec::new(),
-            phrase_indices_by_word: HashMap::new(),
+            indexed_phrases_by_word: HashMap::new(),
         }
     }
 
     fn get_common_words(&self) -> impl Iterator<Item = Word> {
-        self.phrase_indices_by_word
+        self.indexed_phrases_by_word
             .keys()
             .map(|&key_index| Word(&self.indexed_texts[key_index]))
     }
 
+    // TODO(feroldi): Maybe return the words that were already interned?
     fn insert_phrase(&mut self, phrase: Phrase) {
         let phrase_content = String::from(phrase);
 
@@ -76,11 +89,48 @@ impl IndexedPhrases {
         }
 
         let interned_phrase_index = self.intern_text(phrase_content.clone());
+        let mut word_pos_in_phrase = 0;
 
-        for word in split_phrase_into_words(&phrase_content) {
+        for word in phrase_content.split_ascii_whitespace() {
             let interned_word_index = self.intern_text(word.into());
-            self.link_phrase_to_word(interned_phrase_index, interned_word_index);
+            self.link_phrase_to_word(
+                interned_phrase_index,
+                interned_word_index,
+                word_pos_in_phrase,
+            );
+
+            // Adds one to the word length in order to consider the whitespace character
+            // after it.
+            word_pos_in_phrase += word.len() + 1;
         }
+    }
+
+    fn get_phrases_with_word_in_common(
+        &self,
+        word: Word,
+    ) -> impl Iterator<Item = IndexedPhraseContent> {
+        let word_index = self.interned_texts.get(word.0);
+
+        // This is always true, because the only way we can get a `Word` value is by
+        // calling `get_common_words()`, which returns indexed words from the very
+        // `phrase_indices_by_word` collection.
+        debug_assert!(word_index.is_some());
+
+        let indexed_phrases_of_word = self.indexed_phrases_by_word.get(word_index.unwrap());
+
+        // Always true for the same reason above.
+        debug_assert!(indexed_phrases_of_word.is_some());
+
+        indexed_phrases_of_word
+            .unwrap()
+            .iter()
+            .map(|indexed_phrase| {
+                let phrase_content = &self.indexed_texts[indexed_phrase.interned_phrase_index];
+                IndexedPhraseContent {
+                    phrase_content,
+                    word_pos_in_phrase: indexed_phrase.word_pos_in_phrase,
+                }
+            })
     }
 
     fn intern_text(&mut self, text: String) -> usize {
@@ -91,18 +141,22 @@ impl IndexedPhrases {
         })
     }
 
-    fn link_phrase_to_word(&mut self, phrase_index: usize, word_index: usize) {
+    fn link_phrase_to_word(
+        &mut self,
+        phrase_index: usize,
+        word_index: usize,
+        word_pos_in_phrase: usize,
+    ) {
         let phrase_indices = self
-            .phrase_indices_by_word
+            .indexed_phrases_by_word
             .entry(word_index)
             .or_insert_with(HashSet::new);
 
-        phrase_indices.insert(phrase_index);
+        phrase_indices.insert(IndexedPhrase {
+            interned_phrase_index: phrase_index,
+            word_pos_in_phrase,
+        });
     }
-}
-
-fn split_phrase_into_words(phrase: &str) -> impl Iterator<Item = &str> {
-    phrase.split_ascii_whitespace()
 }
 
 #[cfg(test)]
@@ -197,6 +251,79 @@ mod common_words_tests {
         assert_eq!(
             common_words,
             HashSet::from_iter(["hello", "you", "all", "how", "are", "doing"].map(Word))
+        );
+    }
+}
+
+#[cfg(test)]
+mod retrieval_of_phrases_for_word_in_common_tests {
+    use super::{IndexedPhraseContent, IndexedPhrases, Phrase, Word};
+    use std::collections::HashSet;
+
+    #[test]
+    #[should_panic]
+    fn should_panic_if_word_is_unknown() {
+        let indexed_phrases = {
+            let mut ip = IndexedPhrases::new();
+            ip.insert_phrase(Phrase("hello there".into()));
+            ip
+        };
+
+        let _: Vec<_> = indexed_phrases
+            .get_phrases_with_word_in_common(Word("hi"))
+            .collect();
+    }
+
+    #[test]
+    fn should_return_indexed_phrases_that_have_the_passed_word_in_common() {
+        let indexed_phrases = {
+            let mut ip = IndexedPhrases::new();
+            ip.insert_phrase(Phrase("hello there friend".into()));
+            ip.insert_phrase(Phrase("hey friend what are you up to".into()));
+            ip.insert_phrase(Phrase("i have got lots of friends".into()));
+            ip.insert_phrase(Phrase("good evening".into()));
+            ip
+        };
+
+        let phrases: HashSet<_> = indexed_phrases
+            .get_phrases_with_word_in_common(Word("friend"))
+            .collect();
+
+        assert_eq!(
+            phrases,
+            HashSet::from_iter([
+                IndexedPhraseContent {
+                    phrase_content: "hello there friend",
+                    word_pos_in_phrase: 12,
+                },
+                IndexedPhraseContent {
+                    phrase_content: "hey friend what are you up to",
+                    word_pos_in_phrase: 4,
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn should_not_duplicate_phrases() {
+        let indexed_phrases = {
+            let mut ip = IndexedPhrases::new();
+            ip.insert_phrase(Phrase("hello there friend".into()));
+            ip.insert_phrase(Phrase("hello there friend".into()));
+            ip.insert_phrase(Phrase("hello there friend".into()));
+            ip
+        };
+
+        let phrases: HashSet<_> = indexed_phrases
+            .get_phrases_with_word_in_common(Word("friend"))
+            .collect();
+
+        assert_eq!(
+            phrases,
+            HashSet::from_iter([IndexedPhraseContent {
+                phrase_content: "hello there friend",
+                word_pos_in_phrase: 12,
+            },])
         );
     }
 }
