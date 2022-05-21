@@ -3,7 +3,7 @@ use regex::Regex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-fn normalize_text_into_phrases(text: String) -> Vec<Phrase> {
+pub(crate) fn normalize_text_into_phrases(text: String) -> Vec<Phrase> {
     split_text_at_periods(&text)
         .map(|subtext| {
             let subtext = normalize_punctuation_to_whitespace(subtext);
@@ -35,8 +35,8 @@ fn normalize_extra_whitespaces(text: &str) -> Cow<str> {
     EXTRA_WHITESPACE_PATTERN.replace_all(text.trim(), " ")
 }
 
-#[derive(PartialEq, Debug)]
-struct Phrase(String);
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) struct Phrase(String);
 
 impl From<Phrase> for String {
     fn from(phrase: Phrase) -> Self {
@@ -44,7 +44,13 @@ impl From<Phrase> for String {
     }
 }
 
-struct IndexedPhrases {
+impl AsRef<str> for Phrase {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+pub(crate) struct IndexedPhrases {
     interned_texts: HashMap<String, usize>,
     indexed_texts: Vec<String>,
     indexed_phrases_by_word: HashMap<usize, HashSet<IndexedPhrase>>,
@@ -57,16 +63,19 @@ struct IndexedPhrase {
 }
 
 #[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
-struct IndexedPhraseContent<'s> {
+pub(crate) struct IndexedPhraseContent<'s> {
     phrase_content: &'s str,
     word_pos_in_phrase: usize,
 }
 
-#[derive(PartialEq, Eq, Hash, Debug)]
-struct Word<'s>(&'s str);
+#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
+pub(crate) struct Word<'s>(&'s str);
+
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+pub(crate) struct WordIndex(usize);
 
 impl IndexedPhrases {
-    fn new() -> IndexedPhrases {
+    pub(crate) fn new() -> IndexedPhrases {
         IndexedPhrases {
             interned_texts: HashMap::new(),
             indexed_texts: Vec::new(),
@@ -74,25 +83,43 @@ impl IndexedPhrases {
         }
     }
 
-    fn get_common_words(&self) -> impl Iterator<Item = Word> {
+    pub(crate) fn get_common_words(&self) -> impl Iterator<Item = Word> {
         self.indexed_phrases_by_word
             .keys()
             .map(|&key_index| Word(&self.indexed_texts[key_index]))
     }
 
+    // TODO(feroldi): Test this.
+    pub(crate) fn get_words_for_indices(&self, word_indices: &[WordIndex]) -> Vec<Word> {
+        let mut words = Vec::new();
+
+        for word_index in word_indices {
+            words.push(Word(&self.indexed_texts[word_index.0]))
+        }
+
+        words
+    }
+
     // TODO(feroldi): Maybe return the words that were already interned?
-    fn insert_phrase(&mut self, phrase: Phrase) {
+    // TODO(feroldi): Test the returned words.
+    pub(crate) fn insert_phrase(&mut self, phrase: Phrase) -> InsertionResult {
         let phrase_content = String::from(phrase);
 
         if !phrase_content.contains(' ') {
-            return;
+            let interned_word_index = self.intern_text(phrase_content);
+            return InsertionResult {
+                has_inserted_phrase: false,
+                word_indices_from_phrase: vec![WordIndex(interned_word_index)],
+            };
         }
 
         let interned_phrase_index = self.intern_text(phrase_content.clone());
-        let mut word_pos_in_phrase = 0;
+        let mut word_indices_from_phrase = Vec::new();
 
+        let mut word_pos_in_phrase = 0;
         for word in phrase_content.split_ascii_whitespace() {
             let interned_word_index = self.intern_text(word.into());
+
             self.link_phrase_to_word(
                 interned_phrase_index,
                 interned_word_index,
@@ -102,10 +129,17 @@ impl IndexedPhrases {
             // Adds one to the word length in order to consider the whitespace character
             // after it.
             word_pos_in_phrase += word.len() + 1;
+
+            word_indices_from_phrase.push(WordIndex(interned_word_index));
+        }
+
+        InsertionResult {
+            has_inserted_phrase: true,
+            word_indices_from_phrase,
         }
     }
 
-    fn get_phrases_with_word_in_common(
+    pub(crate) fn get_phrases_with_word_in_common(
         &self,
         word: Word,
     ) -> impl Iterator<Item = IndexedPhraseContent> {
@@ -159,7 +193,12 @@ impl IndexedPhrases {
     }
 }
 
-fn concatenate_indexed_phrases<'s>(
+pub(crate) struct InsertionResult {
+    pub(crate) has_inserted_phrase: bool,
+    pub(crate) word_indices_from_phrase: Vec<WordIndex>,
+}
+
+pub(crate) fn concatenate_indexed_phrases<'s>(
     mut first_phrase: IndexedPhraseContent<'s>,
     mut second_phrase: IndexedPhraseContent<'s>,
 ) -> String {
