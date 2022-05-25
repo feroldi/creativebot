@@ -50,6 +50,8 @@ impl AsRef<str> for Phrase {
     }
 }
 
+// FIXME(feroldi): You can always pass WordIndex around, as that is not a
+// problem.
 pub(crate) struct IndexedPhrases {
     interned_texts: HashMap<String, usize>,
     indexed_texts: Vec<String>,
@@ -70,6 +72,14 @@ pub(crate) struct IndexedPhraseContent<'s> {
 
 #[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
 pub(crate) struct Word<'s>(&'s str);
+
+impl std::ops::Deref for Word<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
 
 #[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub(crate) struct WordIndex(usize);
@@ -153,6 +163,8 @@ impl IndexedPhrases {
         let indexed_phrases_of_word = self.indexed_phrases_by_word.get(word_index.unwrap());
 
         // Always true for the same reason above.
+        // FIXME(feroldi): This is not true anymore, because now you're interning
+        // single-word phrases, but you aren't indexing them.
         debug_assert!(indexed_phrases_of_word.is_some());
 
         indexed_phrases_of_word
