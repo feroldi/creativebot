@@ -22,7 +22,7 @@ async fn main() -> io::Result<()> {
 
     let state = BotState {
         indexed_phrases: init_indexed_phrases(database_path)?,
-        reply_prob: 1.0,
+        reply_prob: 0.0,
         rng: rand::rngs::StdRng::from_entropy(),
     };
 
@@ -61,6 +61,51 @@ async fn main() -> io::Result<()> {
             word_indices_from_phrases.into_iter().collect(),
             &mut state.rng,
         );
+
+        let generated_response = match generated_response {
+            Some(response) => response,
+            None => {
+                log::info!("couldn't generate a response");
+                return;
+            }
+        };
+
+        let call_result = context.send_message(&generated_response).call().await;
+
+        if let Err(err) = call_result {
+            log::error!(
+                "couldn't send message `{}`, due to error: {}",
+                generated_response,
+                err
+            );
+        } else {
+            log::info!("generated response: `{}`", generated_response);
+        }
+    });
+
+    bot.command("think", |context, state| async move {
+        use rand::seq::SliceRandom;
+
+        let state = &mut *state.lock().await;
+
+        let all_common_words = state.indexed_phrases.get_common_words().collect::<Vec<_>>();
+
+        if all_common_words.is_empty() {
+            return;
+        }
+
+        let picked_word = all_common_words.choose(&mut state.rng).unwrap();
+
+        let phrases = state
+            .indexed_phrases
+            .get_phrases_with_word_in_common(*picked_word)
+            .collect::<Vec<_>>();
+
+        let first_phrase = phrases.choose(&mut state.rng).unwrap();
+        let second_phrase = phrases.choose(&mut state.rng).unwrap();
+
+        let generated_response =
+            phrase_indexing::concatenate_indexed_phrases(*first_phrase, *second_phrase);
 
         let call_result = context.send_message(&generated_response).call().await;
 
@@ -136,25 +181,41 @@ fn generate_phrase(
     indexed_phrases: &IndexedPhrases,
     word_indices_from_phrases: Vec<WordIndex>,
     rng: &mut impl Rng,
-) -> String {
+) -> Option<String> {
     use rand::seq::SliceRandom;
 
-    let words = {
-        if word_indices_from_phrases.is_empty() {
-            indexed_phrases.get_common_words().collect::<Vec<_>>()
-        } else {
-            indexed_phrases.get_words_for_indices(&word_indices_from_phrases)
-        }
-    };
-    let word_index = rng.gen_range(0..words.len());
-    let picked_word = words[word_index];
+    if word_indices_from_phrases.is_empty() {
+        return None;
+    }
+
+    // TODO(feroldi): Improve this mess.
+    let all_common_words = indexed_phrases
+        .get_common_words()
+        .filter(|w| w.len() > 1)
+        .collect::<HashSet<_>>();
+    let mut words: HashSet<_> = indexed_phrases
+        .get_words_for_indices(&word_indices_from_phrases)
+        .into_iter()
+        .collect();
+
+    words.retain(|w| all_common_words.contains(w));
+    let words: Vec<_> = words.into_iter().collect();
+
+    if words.is_empty() {
+        return None;
+    }
+
+    let picked_word = words.choose(rng).unwrap();
 
     let phrases = indexed_phrases
-        .get_phrases_with_word_in_common(picked_word)
+        .get_phrases_with_word_in_common(*picked_word)
         .collect::<Vec<_>>();
 
     let first_phrase = phrases.choose(rng).unwrap();
     let second_phrase = phrases.choose(rng).unwrap();
 
-    phrase_indexing::concatenate_indexed_phrases(*first_phrase, *second_phrase)
+    Some(phrase_indexing::concatenate_indexed_phrases(
+        *first_phrase,
+        *second_phrase,
+    ))
 }
